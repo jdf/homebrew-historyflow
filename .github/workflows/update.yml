@@ -1,0 +1,92 @@
+# Rewrites the formula for a release of jdf/historyflow-cli, from that
+# release's checksums. Started by tools/release.sh in the source
+# repository once the release is published, or by hand:
+#
+#   gh workflow run update.yml -R jdf/homebrew-historyflow -f version=0.2.0
+name: Update the formula
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The released version, without the v
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version }}
+  RELEASES: https://github.com/jdf/historyflow-cli/releases/download
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write the formula
+        run: |
+          case "$VERSION" in
+            *[!0-9.]* | "") echo "not a version: $VERSION" >&2; exit 1 ;;
+          esac
+          curl -fsSL "$RELEASES/v$VERSION/SHA256SUMS" -o SHA256SUMS
+          sha() {
+            local sum
+            sum=$(grep " historyflow-$VERSION-$1.tar.gz\$" SHA256SUMS | cut -d' ' -f1)
+            [ ${#sum} = 64 ] || { echo "no checksum for $1" >&2; exit 1; }
+            echo "$sum"
+          }
+          url() { echo "$RELEASES/v$VERSION/historyflow-$VERSION-$1.tar.gz"; }
+          ARM=$(sha aarch64-apple-darwin)
+          INTEL=$(sha x86_64-apple-darwin)
+          LINUX=$(sha x86_64-unknown-linux-musl)
+          cat > Formula/historyflow.rb <<FORMULA
+          # Written by .github/workflows/update.yml; edit it there.
+          class Historyflow < Formula
+            desc "See how a document came to be, version by version"
+            homepage "https://github.com/jdf/historyflow-cli"
+            version "$VERSION"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "$(url aarch64-apple-darwin)"
+                sha256 "$ARM"
+              end
+              on_intel do
+                url "$(url x86_64-apple-darwin)"
+                sha256 "$INTEL"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "$(url x86_64-unknown-linux-musl)"
+                sha256 "$LINUX"
+              end
+            end
+
+            def install
+              bin.install "historyflow"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/historyflow --version")
+            end
+          end
+          FORMULA
+          rm SHA256SUMS
+          cat Formula/historyflow.rb
+
+      - name: Commit it
+        run: |
+          if git diff --quiet; then
+            echo "the formula is already at $VERSION"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/historyflow.rb
+          git commit -m "historyflow $VERSION"
+          git push
